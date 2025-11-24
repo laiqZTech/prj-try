@@ -1,1 +1,248 @@
-try
+package com.ebrd.dataservice.model.mdm;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class PartyMdmRequest {
+
+    private Boolean isOrganisation;
+    private String partyName;
+
+    // MDM expects 2-char country codes as strings
+    private String countryOfIncorporation;
+    private String cityOfIncorporation;
+    private String countryOfRisk;
+
+    // numeric, between 10 and 9999999999
+    private Long gicsCode;
+
+    // Add these later if/when you have values:
+    // private Integer nationality;
+    // private List<SourceSystemIdentifierType> sourceSystemIdentifierType;
+    // private List<NameVariationType> nameVariationType;
+}
+
+
+---------
+
+package com.ebrd.dataservice.model.mdm;
+
+import lombok.Data;
+
+import java.util.List;
+
+@Data
+public class PartyMdmResponse {
+
+    private String ssid;
+    private List<MdmResponseCode> responseCode;
+
+    @Data
+    public static class MdmResponseCode {
+        private String responseDescription;
+        private String responseCode;
+    }
+}
+
+
+------------
+
+
+package com.ebrd.dataservice.service;
+
+import com.ebrd.dataservice.model.mdm.PartyMdmResponse;
+import com.ebrd.dataservice.model.request.PartyRequestV2;
+
+public interface MdmService {
+
+    /**
+     * Calls MDM createParty and either returns the successful response
+     * or throws a BadRequest (or other) exception on validation error.
+     */
+    PartyMdmResponse createParty(PartyRequestV2 partyRequest);
+}
+
+
+package com.ebrd.dataservice.service.impl;
+
+import com.ebrd.dataservice.exception.BadRequest;
+import com.ebrd.dataservice.model.mdm.PartyMdmRequest;
+import com.ebrd.dataservice.model.mdm.PartyMdmResponse;
+import com.ebrd.dataservice.model.request.PartyRequestV2;
+import com.ebrd.dataservice.service.MdmService;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.*;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.RestTemplate;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class MdmServiceImpl implements MdmService {
+
+    private final RestTemplate restTemplate;
+
+    @Value("${mdm.party.base-url}")
+    private String mdmBaseUrl;
+
+    @Value("${mdm.party.create-path}")
+    private String mdmCreatePath;
+
+    @Value("${mdm.subscription-key}")
+    private String subscriptionKey;
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @Override
+    public PartyMdmResponse createParty(PartyRequestV2 partyRequest) {
+        PartyMdmRequest mdmRequest = toMdmRequest(partyRequest);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Ocp-Apim-Subscription-Key", subscriptionKey);
+
+        HttpEntity<PartyMdmRequest> entity = new HttpEntity<>(mdmRequest, headers);
+
+        try {
+            log.info("Calling MDM createParty API");
+            ResponseEntity<PartyMdmResponse> response =
+                    restTemplate.postForEntity(mdmBaseUrl + mdmCreatePath, entity, PartyMdmResponse.class);
+
+            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
+                throw new BadRequest("MDM createParty returned empty or non-success response");
+            }
+
+            PartyMdmResponse body = response.getBody();
+            log.info("MDM createParty succeeded, ssid={}", body.getSsid());
+            return body;
+
+        } catch (HttpStatusCodeException ex) {
+            // Body will normally contain one of the 001-025 validation messages
+            String rawBody = ex.getResponseBodyAsString();
+            log.warn("MDM createParty failed: status={}, body={}", ex.getStatusCode(), rawBody);
+
+            String message = rawBody;
+            try {
+                // If your error has a structure, map it here
+                message = extractMdmErrorMessage(rawBody);
+            } catch (Exception ignore) {
+                // fall back to raw body
+            }
+            throw new BadRequest(message);
+        }
+    }
+
+    private PartyMdmRequest toMdmRequest(PartyRequestV2 pr) {
+        return PartyMdmRequest.builder()
+                .isOrganisation(pr.getIsOrganisation())
+                .partyName(pr.getPartyName())
+                // TODO: replace with actual mapping from numeric IDs to ISO codes
+                .countryOfIncorporation(String.valueOf(pr.getCountryOfIncorporation()))
+                .cityOfIncorporation(String.valueOf(pr.getCityOfIncorporation()))
+                .countryOfRisk(String.valueOf(pr.getCountryOfRisk()))
+                .gicsCode(pr.getGicsCode() != null ? Long.valueOf(pr.getGicsCode()) : null)
+                .build();
+    }
+
+    /**
+     * If the MDM error JSON has a known schema, parse and return the first useful message.
+     * For now this is just a placeholder to be customised once you see real error payloads.
+     */
+    private String extractMdmErrorMessage(String rawBody) throws Exception {
+        // Example if your error looks like PartyMdmResponse with non-200 code:
+        PartyMdmResponse error = objectMapper.readValue(rawBody, PartyMdmResponse.class);
+        if (error.getResponseCode() != null && !error.getResponseCode().isEmpty()) {
+            return error.getResponseCode().get(0).getResponseDescription();
+        }
+        return rawBody;
+    }
+}
+
+
+-------------
+
+@PostMapping(value = "/party", headers = "x-api-version=3")
+public ResponseEntity<PartyResponse> createPartyV3(
+        @RequestBody PartyRequestV2 body,
+        @RequestHeader(name = "x-api-version", required = false) Integer version
+) throws JsonProcessingException {
+    logger.info("PCP API Controller: inside createParty() method");
+    try {
+        return postParty(body);
+    } catch (HttpStatusCodeException ex) {
+        ...
+    }
+}
+
+
+
+@RestController
+@RequestMapping(...)
+public class PcpApiController {
+
+    private final PCPService pcpService;
+    private final MdmService mdmService;
+    private final Logger logger = LoggerFactory.getLogger(PcpApiController.class);
+
+    @Autowired
+    public PcpApiController(PCPService pcpService, MdmService mdmService) {
+        this.pcpService = pcpService;
+        this.mdmService = mdmService;
+    }
+
+    // existing methods...
+}
+
+
+------
+
+@Operation(summary = "Create Party", description = "Create party in PCP", responses = {
+        @ApiResponse(responseCode = "201", description = "Party is created successfully",
+                content = @Content(mediaType = "application/json",
+                        schema = @Schema(implementation = PartyResponse.class)))
+})
+@PostMapping(value = "/party", headers = "x-api-version=3")
+public ResponseEntity<PartyResponse> createPartyV3(
+        @Parameter(name = "Create Party JSON V2", required = true)
+        @RequestBody PartyRequestV2 body,
+        @Parameter(name = "x-api-version", required = false,
+                description = "API version. Version 3 will allow party creation at MDM.")
+        @RequestHeader(name = "x-api-version", required = false) Integer version
+) throws JsonProcessingException {
+
+    logger.info("PCP API Controller: inside createPartyV3() method");
+
+    try {
+        // 1. Call MDM first
+        PartyMdmResponse mdmResponse = mdmService.createParty(body);
+
+        // 2. If needed, propagate SID into PCP request (choose how PCP expects it)
+        // e.g. add field to PartyRequestV2 and set it here:
+        // body.setSsid(mdmResponse.getSsid());
+
+        // 3. Call existing PCP flow
+        return postParty(body);
+
+    } catch (HttpStatusCodeException ex) {
+        ObjectMapper mapper = new ObjectMapper();
+        Error map = mapper.readValue(ex.getResponseBodyAsString(), Error.class);
+        throw new BadRequest(map.getMessage());
+    }
+}
+
+private ResponseEntity<PartyResponse> postParty(PartyRequest<?> partyRequest) {
+    ResponseEntity<PartyResponse> response = pcpService.createParty(partyRequest);
+    return Optional.ofNullable(response)
+            .map(result -> new ResponseEntity<>(response.getBody(), response.getStatusCode()))
+            .orElse(new ResponseEntity<>(HttpStatus.NOT_FOUND));
+}
