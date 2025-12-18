@@ -259,6 +259,8 @@ import com.ebrd.dataservice.rest.errors.BadRequest;
 import com.ebrd.dataservice.service.apim.EBXCityService;
 import com.ebrd.dataservice.service.apim.EBXCountryService;
 import com.ebrd.dataservice.service.pcp.PCPUtilService;
+import com.ebrd.dataservice.service.apim.model.EBXCity;     // <-- adjust package if different
+import com.ebrd.dataservice.service.apim.model.EBXCountry;  // <-- adjust package if different
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -270,7 +272,7 @@ import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
 import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -288,46 +290,42 @@ class MdmServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        // Set @Value fields without Spring context
         ReflectionTestUtils.setField(service, "mdmBaseUrl", "https://mdm.example");
         ReflectionTestUtils.setField(service, "subscriptionKey", "sub-key-123");
         ReflectionTestUtils.setField(service, "mdmCreatePath", "/party/create");
     }
 
     @Test
-    void createParty_success_returnsBody_andSendsCorrectHeadersAndMappedBody() {
+    void createParty_success_postsMappedRequest_andReturnsResponseBody() {
         // Arrange
         PartyRequestV2 pr = mock(PartyRequestV2.class);
         when(pr.getIsOrganisation()).thenReturn(true);
-        when(pr.getCountryOfIncorporation()).thenReturn("GBR");
-        when(pr.getCityOfIncorporation()).thenReturn("LON");
-        when(pr.getCountryOfRisk()).thenReturn("GBR");
+
+        // These are long per your EBX service signature
+        when(pr.getCountryOfIncorporation()).thenReturn(826L);
+        when(pr.getCityOfIncorporation()).thenReturn(1001L);
+        when(pr.getCountryOfRisk()).thenReturn(826L);
+
         when(pr.getGicsCode()).thenReturn("12345678");
         when(pr.getPartyName()).thenReturn("ACME LTD");
 
-        // Use deep stubs style to avoid needing concrete EBX DTO classes in the test
-        // (Assumes these methods exist as per your service code)
-        Object countryDto = mock(Object.class, RETURNS_DEEP_STUBS);
-        Object cityDto = mock(Object.class, RETURNS_DEEP_STUBS);
+        EBXCountry country = mock(EBXCountry.class);
+        when(country.getAlpha2Code()).thenReturn("GB");
+        when(ebxCountryService.findByHeritageOmsCtryCode(anyLong())).thenReturn(country);
 
-        // We can't type these DTOs here without your actual classes, so we mock chained methods:
-        // ebxCountryService.findByHeritageOmsCttryCode(...).getAlpha2Code()
-        when(ebxCountryService.findByHeritageOmsCttryCode(anyString())).thenReturn((com.ebrd.dataservice.service.apim.dto.CountryDto) countryDto);
-        when(((com.ebrd.dataservice.service.apim.dto.CountryDto) countryDto).getAlpha2Code()).thenReturn("GB");
+        EBXCity city = mock(EBXCity.class);
+        when(city.getName()).thenReturn("London");
+        when(ebxCityService.findByHeritageOmsCityCode(anyLong())).thenReturn(city);
 
-        when(ebxCityService.findByHeritageOmsCityCode(anyString())).thenReturn((com.ebrd.dataservice.service.apim.dto.CityDto) cityDto);
-        when(((com.ebrd.dataservice.service.apim.dto.CityDto) cityDto).getName()).thenReturn("London");
-
-        when(pcpUtilService.getCounterPartyType(eq("GBR"), eq("123456")))
+        when(pcpUtilService.getCounterPartyType(eq(826L), eq("123456")))
                 .thenReturn(Optional.of("SOME_TYPE"));
         when(pcpUtilService.nextSourceSystemIdentifier()).thenReturn(999L);
 
         PartyMdmResponse mdmResponse = new PartyMdmResponse();
         mdmResponse.setSsid("SSID-1");
 
-        ResponseEntity<PartyMdmResponse> responseEntity = new ResponseEntity<>(mdmResponse, HttpStatus.OK);
         when(restTemplate.postForEntity(anyString(), any(), eq(PartyMdmResponse.class)))
-                .thenReturn(responseEntity);
+                .thenReturn(new ResponseEntity<>(mdmResponse, HttpStatus.OK));
 
         ArgumentCaptor<String> urlCaptor = ArgumentCaptor.forClass(String.class);
         @SuppressWarnings("rawtypes")
@@ -346,14 +344,13 @@ class MdmServiceImplTest {
         @SuppressWarnings("unchecked")
         HttpEntity<PartyMdmRequest> sentEntity = (HttpEntity<PartyMdmRequest>) entityCaptor.getValue();
 
-        assertNotNull(sentEntity.getHeaders());
         assertEquals(MediaType.APPLICATION_JSON, sentEntity.getHeaders().getContentType());
         assertEquals("sub-key-123", sentEntity.getHeaders().getFirst("Ocp-Apim-Subscription-Key"));
 
         PartyMdmRequest sentBody = sentEntity.getBody();
         assertNotNull(sentBody);
 
-        // Mapping asserts (based on your toMdmRequest method)
+        // Verify mapping (matches your toMdmRequest)
         assertTrue(sentBody.getOrganisation());
         assertEquals("12345678", sentBody.getGicsCode());
         assertEquals("London", sentBody.getCityOfIncorporation());
@@ -369,25 +366,10 @@ class MdmServiceImplTest {
     }
 
     @Test
-    void createParty_non2xxOrNullBody_throwsBadRequest() {
+    void createParty_nullBody_throwsBadRequest() {
         PartyRequestV2 pr = mock(PartyRequestV2.class);
+        stubMinimumMapping(pr);
 
-        // Make mapping succeed with minimal stubbing:
-        when(pr.getIsOrganisation()).thenReturn(true);
-        when(pr.getCountryOfIncorporation()).thenReturn("GBR");
-        when(pr.getCityOfIncorporation()).thenReturn("LON");
-        when(pr.getCountryOfRisk()).thenReturn("GBR");
-        when(pr.getGicsCode()).thenReturn("12345678");
-        when(pr.getPartyName()).thenReturn("ACME LTD");
-
-        // You’ll need to adapt these two lines to your actual EBX DTO classes if different
-        when(ebxCountryService.findByHeritageOmsCttryCode(anyString()).getAlpha2Code()).thenReturn("GB");
-        when(ebxCityService.findByHeritageOmsCityCode(anyString()).getName()).thenReturn("London");
-
-        when(pcpUtilService.getCounterPartyType(anyString(), anyString())).thenReturn(Optional.empty());
-        when(pcpUtilService.nextSourceSystemIdentifier()).thenReturn(1L);
-
-        // Case: null body but 200 OK
         when(restTemplate.postForEntity(anyString(), any(), eq(PartyMdmResponse.class)))
                 .thenReturn(new ResponseEntity<>(null, HttpStatus.OK));
 
@@ -396,21 +378,9 @@ class MdmServiceImplTest {
     }
 
     @Test
-    void createParty_httpStatusException_parseFails_returnsRawBodyInBadRequest() {
+    void createParty_httpError_parseFails_throwsBadRequestWithRawBody() {
         PartyRequestV2 pr = mock(PartyRequestV2.class);
-
-        // mapping stubs
-        when(pr.getIsOrganisation()).thenReturn(true);
-        when(pr.getCountryOfIncorporation()).thenReturn("GBR");
-        when(pr.getCityOfIncorporation()).thenReturn("LON");
-        when(pr.getCountryOfRisk()).thenReturn("GBR");
-        when(pr.getGicsCode()).thenReturn("12345678");
-        when(pr.getPartyName()).thenReturn("ACME LTD");
-
-        when(ebxCountryService.findByHeritageOmsCttryCode(anyString()).getAlpha2Code()).thenReturn("GB");
-        when(ebxCityService.findByHeritageOmsCityCode(anyString()).getName()).thenReturn("London");
-        when(pcpUtilService.getCounterPartyType(anyString(), anyString())).thenReturn(Optional.empty());
-        when(pcpUtilService.nextSourceSystemIdentifier()).thenReturn(1L);
+        stubMinimumMapping(pr);
 
         String rawBody = "not-json-error-body";
         HttpClientErrorException httpEx = HttpClientErrorException.create(
@@ -429,24 +399,12 @@ class MdmServiceImplTest {
     }
 
     @Test
-    void createParty_httpStatusException_parseSucceeds_usesResponseDescriptionInBadRequest() {
+    void createParty_httpError_parseSucceeds_throwsBadRequestWithResponseDescription() {
         PartyRequestV2 pr = mock(PartyRequestV2.class);
+        stubMinimumMapping(pr);
 
-        // mapping stubs
-        when(pr.getIsOrganisation()).thenReturn(true);
-        when(pr.getCountryOfIncorporation()).thenReturn("GBR");
-        when(pr.getCityOfIncorporation()).thenReturn("LON");
-        when(pr.getCountryOfRisk()).thenReturn("GBR");
-        when(pr.getGicsCode()).thenReturn("12345678");
-        when(pr.getPartyName()).thenReturn("ACME LTD");
-
-        when(ebxCountryService.findByHeritageOmsCttryCode(anyString()).getAlpha2Code()).thenReturn("GB");
-        when(ebxCityService.findByHeritageOmsCityCode(anyString()).getName()).thenReturn("London");
-        when(pcpUtilService.getCounterPartyType(anyString(), anyString())).thenReturn(Optional.empty());
-        when(pcpUtilService.nextSourceSystemIdentifier()).thenReturn(1L);
-
-        // This JSON must match your PartyMdmResponse structure enough for Jackson to map it.
-        // Your code expects: error.getResponseCode().get(0).getResponseDescription()
+        // Must match PartyMdmResponse shape your code reads:
+        // error.getResponseCode().get(0).getResponseDescription()
         String json = "{ \"responseCode\": [ { \"responseDescription\": \"Invalid party\" } ] }";
 
         HttpClientErrorException httpEx = HttpClientErrorException.create(
@@ -462,5 +420,25 @@ class MdmServiceImplTest {
 
         BadRequest ex = assertThrows(BadRequest.class, () -> service.createParty(pr));
         assertEquals("MDM: Invalid party", ex.getMessage());
+    }
+
+    private void stubMinimumMapping(PartyRequestV2 pr) {
+        when(pr.getIsOrganisation()).thenReturn(true);
+        when(pr.getCountryOfIncorporation()).thenReturn(826L);
+        when(pr.getCityOfIncorporation()).thenReturn(1001L);
+        when(pr.getCountryOfRisk()).thenReturn(826L);
+        when(pr.getGicsCode()).thenReturn("12345678");
+        when(pr.getPartyName()).thenReturn("ACME LTD");
+
+        EBXCountry country = mock(EBXCountry.class);
+        when(country.getAlpha2Code()).thenReturn("GB");
+        when(ebxCountryService.findByHeritageOmsCtryCode(anyLong())).thenReturn(country);
+
+        EBXCity city = mock(EBXCity.class);
+        when(city.getName()).thenReturn("London");
+        when(ebxCityService.findByHeritageOmsCityCode(anyLong())).thenReturn(city);
+
+        when(pcpUtilService.getCounterPartyType(anyLong(), anyString())).thenReturn(Optional.empty());
+        when(pcpUtilService.nextSourceSystemIdentifier()).thenReturn(1L);
     }
 }
