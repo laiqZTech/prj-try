@@ -246,3 +246,146 @@ private ResponseEntity<PartyResponse> postParty(PartyRequest<?> partyRequest) {
             .map(result -> new ResponseEntity<>(response.getBody(), response.getStatusCode()))
             .orElse(new ResponseEntity<>(HttpStatus.NOT_FOUND));
 }
+
+
+--------------
+
+package com.ebrd.dataservice.service.impl;
+
+import com.ebrd.dataservice.exception.BadRequest;
+import com.ebrd.dataservice.model.mdm.PartyMdmRequest;
+import com.ebrd.dataservice.model.mdm.PartyMdmResponse;
+import com.ebrd.dataservice.model.mdm.PartyMdmResponse.MdmResponseCode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.annotation.Bean;
+import org.springframework.http.*;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.junit.jupiter.SpringExtension;
+import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.RestTemplate;
+
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+@ExtendWith(SpringExtension.class)
+@TestPropertySource(properties = {
+        "mdm.party.base-url=https://mdm.example.com",
+        "mdm.party.create-path=/party-mdm/v1/createParty",
+        "mdm.subscription-key=test-sub-key"
+})
+class MdmServiceImplTest {
+
+    @TestConfiguration
+    static class TestConfig {
+
+        @Bean
+        MdmServiceImpl mdmService(RestTemplate restTemplate) {
+            // Spring will still inject @Value fields on this bean
+            return new MdmServiceImpl(restTemplate);
+        }
+
+        @Bean
+        RestTemplate restTemplate() {
+            // will be overridden by @MockBean below
+            return new RestTemplate();
+        }
+    }
+
+    @Autowired
+    private MdmServiceImpl mdmService;
+
+    @MockBean
+    private RestTemplate restTemplate;  // mocks the bean from TestConfig
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @Test
+    void createParty_success_returnsResponse() {
+        PartyMdmRequest request = PartyMdmRequest.builder()
+                .isOrganisation(true)
+                .partyName("Test Org")
+                .countryOfIncorporation("AL")
+                .cityOfIncorporation("0101")
+                .countryOfRisk("AL")
+                .gicsCode(20301010L)
+                .build();
+
+        PartyMdmResponse body = new PartyMdmResponse();
+        body.setSsid("SID123");
+        body.setResponseCode(List.of(responseCode("Success", "200")));
+
+        ResponseEntity<PartyMdmResponse> response =
+                new ResponseEntity<>(body, HttpStatus.OK);
+
+        when(restTemplate.postForEntity(
+                eq("https://mdm.example.com/party-mdm/v1/createParty"),
+                any(HttpEntity.class),
+                eq(PartyMdmResponse.class)))
+            .thenReturn(response);
+
+        PartyMdmResponse result = mdmService.createParty(request);
+
+        assertThat(result.getSsid()).isEqualTo("SID123");
+
+        // verify headers + body if you want
+        ArgumentCaptor<HttpEntity<PartyMdmRequest>> entityCaptor =
+                ArgumentCaptor.forClass(HttpEntity.class);
+
+        verify(restTemplate).postForEntity(
+                eq("https://mdm.example.com/party-mdm/v1/createParty"),
+                entityCaptor.capture(),
+                eq(PartyMdmResponse.class));
+
+        HttpEntity<PartyMdmRequest> entity = entityCaptor.getValue();
+        assertThat(entity.getBody()).isEqualTo(request);
+        assertThat(entity.getHeaders().getFirst("Ocp-Apim-Subscription-Key"))
+                .isEqualTo("test-sub-key");
+    }
+
+    @Test
+    void createParty_error_throwsBadRequestWithParsedMessage() throws Exception {
+        PartyMdmRequest request = PartyMdmRequest.builder()
+                .isOrganisation(true)
+                .partyName("Bad Org")
+                .build();
+
+        PartyMdmResponse errorBody = new PartyMdmResponse();
+        errorBody.setResponseCode(List.of(responseCode("GICS Code is invalid", "013")));
+        String json = objectMapper.writeValueAsString(errorBody);
+
+        HttpClientErrorException ex = new HttpClientErrorException(
+                HttpStatus.BAD_REQUEST,
+                "Bad Request",
+                json.getBytes(StandardCharsets.UTF_8),
+                StandardCharsets.UTF_8
+        );
+
+        when(restTemplate.postForEntity(
+                anyString(),
+                any(HttpEntity.class),
+                eq(PartyMdmResponse.class)))
+            .thenThrow(ex);
+
+        BadRequest br = assertThrows(BadRequest.class, () -> mdmService.createParty(request));
+        assertThat(br.getMessage()).isEqualTo("GICS Code is invalid");
+    }
+
+    private MdmResponseCode responseCode(String desc, String code) {
+        MdmResponseCode rc = new MdmResponseCode();
+        rc.setResponseDescription(desc);
+        rc.setResponseCode(code);
+        return rc;
+    }
+}
