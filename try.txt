@@ -442,3 +442,87 @@ class MdmServiceImplTest {
         when(pcpUtilService.nextSourceSystemIdentifier()).thenReturn(1L);
     }
 }
+
+----------
+
+package com.ebrd.ws.client;
+
+import com.ebrd.ws.model.dataservice.PartyMdmResponse;
+import com.ebrd.ws.model.dataservice.PartyRequestV2;
+import org.springframework.http.*;
+import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.RestTemplate;
+
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+
+public class DataservicePartyClient {
+
+    private final RestTemplate restTemplate;
+
+    public DataservicePartyClient(RestTemplate restTemplate) {
+        this.restTemplate = restTemplate;
+    }
+
+    public PartyMdmResponse createParty(PartyRequestV2 req) {
+        String baseUrl = requireProp("dataservice.baseUrl");            // e.g. https://dataservice.company.com
+        String path    = getProp("dataservice.party.createPath", "/mdm/party/v2");
+        String user    = requireProp("dataservice.username");
+        String pass    = requireProp("dataservice.password");
+
+        String url = normalize(baseUrl) + normalizePath(path);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set(HttpHeaders.AUTHORIZATION, basicAuthHeader(user, pass));
+
+        HttpEntity<PartyRequestV2> entity = new HttpEntity<>(req, headers);
+
+        try {
+            ResponseEntity<PartyMdmResponse> resp =
+                    restTemplate.exchange(url, HttpMethod.POST, entity, PartyMdmResponse.class);
+
+            if (!resp.getStatusCode().is2xxSuccessful() || resp.getBody() == null) {
+                throw new RuntimeException("Dataservice createParty returned " + resp.getStatusCode());
+            }
+            return resp.getBody();
+
+        } catch (HttpStatusCodeException ex) {
+            // Dataservice often returns helpful body text on 4xx/5xx
+            throw new RuntimeException(
+                    "Dataservice error " + ex.getStatusCode() + ": " + ex.getResponseBodyAsString(), ex
+            );
+        }
+    }
+
+    private static String basicAuthHeader(String username, String password) {
+        String raw = username + ":" + password;
+        String encoded = Base64.getEncoder().encodeToString(raw.getBytes(StandardCharsets.UTF_8));
+        return "Basic " + encoded;
+    }
+
+    private static String requireProp(String key) {
+        String val = System.getProperty(key);
+        if (val == null || val.trim().isEmpty()) {
+            throw new IllegalStateException("Missing system property: " + key);
+        }
+        return val.trim();
+    }
+
+    private static String getProp(String key, String defaultVal) {
+        String val = System.getProperty(key);
+        return (val == null || val.trim().isEmpty()) ? defaultVal : val.trim();
+    }
+
+    private static String normalize(String baseUrl) {
+        // remove trailing slash if present
+        if (baseUrl.endsWith("/")) return baseUrl.substring(0, baseUrl.length() - 1);
+        return baseUrl;
+    }
+
+    private static String normalizePath(String path) {
+        // ensure leading slash
+        if (!path.startsWith("/")) return "/" + path;
+        return path;
+    }
+}
